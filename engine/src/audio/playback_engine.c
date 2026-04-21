@@ -178,7 +178,8 @@ static void build_playback_path(char *buf, size_t len,
                 c=='"'||c=='<'||c=='>'||c=='|') ? '_' : c;
     }
     *d = '\0';
-    snprintf(buf, len, "%s/%s_%s_%s.wav", target, scene, take, safe);
+    /* Matches disk_writer's build_folder_path: {folder}_{scene}_{take}.wav */
+    snprintf(buf, len, "%s/%s_%s_%s.wav", target, safe, scene, take);
 }
 
 /* -------------------------------------------------------------------------

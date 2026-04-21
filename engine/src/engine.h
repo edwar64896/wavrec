@@ -28,6 +28,8 @@ const char *eng_state_name(EngState s);
 
 #define WAVREC_MAX_TARGETS 8
 #define WAVREC_MAX_TARGET_PATH 512
+#define WAVREC_MAX_FOLDERS 16
+#define WAVREC_MAX_FOLDER_NAME 32
 
 /* Sample format — drives disk conversion and WAV AudioFormat field. */
 typedef enum {
@@ -47,6 +49,21 @@ static inline uint8_t wavrec_fmt_bytes(WavSampleFormat f) {
     return (f == WAVREC_FMT_PCM16) ? 2u : (f == WAVREC_FMT_PCM24) ? 3u : 4u;
 }
 
+/* -------------------------------------------------------------------------
+ * Folder — groups tracks into a single poly WAV output, with its own set
+ * of record targets (disks).  A track belongs to exactly one folder; its
+ * ordinal position in `track_ids[]` is its channel index in the poly file.
+ * ---------------------------------------------------------------------- */
+
+typedef struct {
+    int   id;
+    char  name[WAVREC_MAX_FOLDER_NAME];
+    int   track_ids[WAVREC_MAX_CHANNELS];  /* ordered — defines poly channel order */
+    int   n_tracks;
+    char  targets[WAVREC_MAX_TARGETS][WAVREC_MAX_TARGET_PATH];
+    int   n_targets;
+} EngFolder;
+
 typedef struct {
     uint32_t       sample_rate;
     WavSampleFormat sample_format; /* replaces bare bit_depth */
@@ -57,6 +74,19 @@ typedef struct {
     char     scene[32];
     char     take[8];
     char     tape[16];
+
+    EngFolder folders[WAVREC_MAX_FOLDERS];
+    int       n_folders;
+
+    /* Pre-record ("pre-roll") — seconds of audio buffered continuously while
+     * a track is armed, prepended to the recording when the user hits Record.
+     * 0 = disabled.  Changes trigger pre_roll_ring reallocation on
+     * CMD_SESSION_INIT. */
+    float     pre_roll_seconds;
+
+    /* Legacy flat-target view — kept for disk_writer.c and playback_engine.c
+     * until the stage-2 folder-native disk writer rewrite.  Populated by
+     * parse_session_init() as the union of targets across all folders. */
     char     record_targets[WAVREC_MAX_TARGETS][WAVREC_MAX_TARGET_PATH];
     int      n_targets;
 } EngSession;
@@ -148,3 +178,8 @@ void          engine_dispatch(WavRecEngine *eng, WavRecMsgType type,
 /* Called by subsystems to emit an event to the UI. */
 void          engine_emit(WavRecEngine *eng, WavRecMsgType type,
                           const char *payload_json);
+
+/* Apply any staged pre-arm changes (pre_armed → armed), clearing pre_armed.
+ * Called on the disk_writer thread during a sample-contiguous rotation so
+ * that the armed set becomes authoritative at the rotation boundary. */
+void          engine_apply_pre_armed(WavRecEngine *eng);

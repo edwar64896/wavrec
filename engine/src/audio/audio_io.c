@@ -86,16 +86,15 @@ static void audio_callback(ma_device *device,
             for (uint32_t f = 0; f < fc; f++)
                 aio->tmp[f] = in_buf[f * n_in_ch + src_ch];
 
-            /* Record ring — raw, no gain.
-             * Write when armed+recording (disk path) OR when monitored
-             * (so the record engine can feed meter rings even outside of
-             * a recording session). One write per track per callback. */
-            if ((t->armed && engine_is_recording(eng)) || t->monitor) {
-                uint32_t written = audio_ring_write(&aio->input_rings[i],
-                                                    aio->tmp, fc);
-                if (written < fc && t->armed)
-                    atomic_fetch_add(&aio->xrun_count, 1);
-            }
+            /* Record ring — raw, no gain.  Always fed when the track is
+             * armed OR monitored (we already skipped the track otherwise).
+             * The record engine decides what to do with the data based on
+             * the engine state: disk ring when recording, pre-roll ring
+             * when armed+idle, always meter + waveform. */
+            uint32_t written = audio_ring_write(&aio->input_rings[i],
+                                                aio->tmp, fc);
+            if (written < fc && t->armed)
+                atomic_fetch_add(&aio->xrun_count, 1);
 
             /* Monitor mix — gain applied here (centre pan = equal L/R) */
             if (t->monitor) {

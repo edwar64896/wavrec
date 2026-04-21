@@ -33,6 +33,7 @@ object MsgType {
     const val EVT_DISK_STATUS          = 0x87
     const val EVT_CUE_UPDATE           = 0x88
     const val EVT_TRANSCRIPTION        = 0x89
+    const val EVT_TARGET_COMMIT        = 0x8A
     const val EVT_ERROR                = 0xE0
     const val EVT_LOG                  = 0xE1
 }
@@ -77,6 +78,15 @@ sealed class EngineEvent {
         val writeRateBps: Long,
         val ok          : Boolean,
     )
+
+    data class TargetCommit(val commits: List<Entry>) : EngineEvent() {
+        data class Entry(
+            val folderId : Int,
+            val targetIdx: Int,
+            val frames   : Long,
+            val bytes    : Long,
+        )
+    }
 
     data class EngineError(val code: Int, val severity: String, val message: String) : EngineEvent()
     data class Log(val level: String, val message: String) : EngineEvent()
@@ -135,6 +145,18 @@ object EngineEventParser {
                     )
                 } ?: emptyList(),
                 remainingSecs = obj["estimated_remaining_seconds"]?.jsonPrimitive?.long ?: 0L,
+            )
+
+            MsgType.EVT_TARGET_COMMIT -> EngineEvent.TargetCommit(
+                commits = obj["commits"]?.jsonArray?.map { c ->
+                    val o = c.jsonObject
+                    EngineEvent.TargetCommit.Entry(
+                        folderId  = o["folder_id"]?.jsonPrimitive?.int ?: 0,
+                        targetIdx = o["target_idx"]?.jsonPrimitive?.int ?: 0,
+                        frames    = o["frames"]?.jsonPrimitive?.long ?: 0L,
+                        bytes     = o["bytes"]?.jsonPrimitive?.long ?: 0L,
+                    )
+                } ?: emptyList()
             )
 
             MsgType.EVT_ERROR -> EngineEvent.EngineError(

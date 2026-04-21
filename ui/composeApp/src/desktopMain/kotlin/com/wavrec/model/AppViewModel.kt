@@ -84,6 +84,16 @@ class AppViewModel(
                         )}
                     is EngineEvent.Log ->
                         _state.update { it.copy(lastError = "[${event.level}] ${event.message}") }
+                    is EngineEvent.TargetCommit -> {
+                        val now = System.currentTimeMillis()
+                        _state.update { s ->
+                            val stamped = s.targetCommits.toMutableMap()
+                            event.commits.forEach { c ->
+                                stamped[c.folderId to c.targetIdx] = now
+                            }
+                            s.copy(targetCommits = stamped)
+                        }
+                    }
                     else -> {}
                 }
             }
@@ -184,6 +194,10 @@ class AppViewModel(
         val defaultTarget = "${System.getProperty("user.home")}${File.separator}WavRec"
         File(defaultTarget).mkdirs()
         currentTargets = listOf(defaultTarget)
+        /* Default layout: one "Main" folder that every track lands in. */
+        _state.update { it.copy(folders = listOf(
+            Folder(id = 0, name = "Main", trackIds = emptyList(), targets = listOf(defaultTarget))
+        )) }
         pushSessionInit()
         repeat(8) { i -> addTrack("Track ${i + 1}", hwInput = i) }
     }
@@ -217,19 +231,55 @@ class AppViewModel(
         pushSessionInit(tcRate = rate, tcDrop = drop)
     }
 
+    fun setPreRoll(seconds: Float) {
+        _state.update { it.copy(preRollSeconds = seconds) }
+        pushSessionInit(preRoll = seconds)
+    }
+
+    /** Scene 01–99.  Changing scene resets take to 1 (industry convention). */
+    fun setScene(n: Int) {
+        val clamped = n.coerceIn(1, 99)
+        _state.update { it.copy(sceneNum = clamped, takeNum = 1) }
+        pushSessionInit()
+    }
+
+    /** Take 001–999. */
+    fun setTake(n: Int) {
+        val clamped = n.coerceIn(1, 999)
+        _state.update { it.copy(takeNum = clamped) }
+        pushSessionInit()
+    }
+
     private fun pushSessionInit(
         sampleRate  : Int    = _state.value.sampleRate,
         sampleFormat: String = _state.value.sampleFormat,
         bufferFrames: Int    = 512,
-        scene       : String = "001",
-        take        : String = "01",
+        scene       : String = "%02d".format(_state.value.sceneNum),
+        take        : String = "%03d".format(_state.value.takeNum),
         tape        : String = "A001",
         tcRate      : String = _state.value.timecodeRate,
         tcDrop      : Boolean = _state.value.timecodeDrop,
+        preRoll     : Float  = _state.value.preRollSeconds,
     ) {
-        val targetsJson = currentTargets.joinToString(",") { "\"${it.replace("\\", "\\\\")}\"" }
         val dev = currentDevice.replace("\"", "\\\"")
-        val payload = """{"sample_rate":$sampleRate,"sample_format":"$sampleFormat","buffer_frames":$bufferFrames,"device":"$dev","timecode_rate":"$tcRate","timecode_df":$tcDrop,"scene":"$scene","take":"$take","tape":"$tape","record_targets":[$targetsJson]}"""
+
+        /* Serialize folders with tracks + per-folder targets.  If no folders
+         * have been set up yet we fall back to a flat record_targets payload
+         * so the engine's legacy path still opens a default "Main" folder. */
+        val folders = _state.value.folders
+        val folderJson = if (folders.isEmpty()) "" else folders.joinToString(",") { f ->
+            val name    = f.name.replace("\"", "\\\"")
+            val trackIds = f.trackIds.joinToString(",")
+            val tgts    = f.targets.joinToString(",") { "\"${it.replace("\\", "\\\\")}\"" }
+            """{"id":${f.id},"name":"$name","track_ids":[$trackIds],"targets":[$tgts]}"""
+        }
+
+        val payload = if (folderJson.isNotEmpty()) {
+            """{"sample_rate":$sampleRate,"sample_format":"$sampleFormat","buffer_frames":$bufferFrames,"device":"$dev","timecode_rate":"$tcRate","timecode_df":$tcDrop,"pre_roll_seconds":$preRoll,"scene":"$scene","take":"$take","tape":"$tape","folders":[$folderJson]}"""
+        } else {
+            val targetsJson = currentTargets.joinToString(",") { "\"${it.replace("\\", "\\\\")}\"" }
+            """{"sample_rate":$sampleRate,"sample_format":"$sampleFormat","buffer_frames":$bufferFrames,"device":"$dev","timecode_rate":"$tcRate","timecode_df":$tcDrop,"pre_roll_seconds":$preRoll,"scene":"$scene","take":"$take","tape":"$tape","record_targets":[$targetsJson]}"""
+        }
         runner.sendCommand(MsgType.CMD_SESSION_INIT, payload)
     }
 
@@ -238,19 +288,37 @@ class AppViewModel(
      * ------------------------------------------------------------------ */
 
     fun addTrack(label: String = "Track ${_state.value.tracks.size + 1}",
-                 hwInput: Int  = _state.value.tracks.size) {
+                 hwInput: Int  = _state.value.tracks.size,
+                 folderId: Int = 0) {
         val id = _state.value.tracks.size
-        _state.update { s -> s.copy(tracks = s.tracks + TrackState(id = id, label = label, hwInput = hwInput)) }
+        _state.update { s ->
+            val withTrack = s.copy(tracks = s.tracks + TrackState(id = id, label = label, hwInput = hwInput))
+            /* Add to the requested folder (default: first folder). */
+            val folders = withTrack.folders.ifEmpty { listOf(Folder(id = 0, name = "Main")) }
+            val updated = folders.map { f ->
+                if (f.id == folderId) f.copy(trackIds = f.trackIds + id) else f
+            }
+            withTrack.copy(folders = updated)
+        }
         pushTrack(id)
+        /* Push the new session so the engine knows this track belongs to the folder. */
+        pushSessionInit()
     }
 
     fun removeTrack(trackId: Int) {
-        /* Remove from UI — renumber remaining tracks and re-push all */
-        val updated = _state.value.tracks
-            .filter  { it.id != trackId }
-            .mapIndexed { i, t -> t.copy(id = i) }
-        _state.update { it.copy(tracks = updated) }
-        pushAllTracks(updated)
+        /* Remove from UI — renumber remaining tracks and re-push all. Folder
+         * track_ids are remapped to the new ids (drop removed, shift higher). */
+        val oldTracks = _state.value.tracks
+        val keptIds   = oldTracks.filter { it.id != trackId }.map { it.id }
+        val idRemap   = keptIds.mapIndexed { new, old -> old to new }.toMap()
+
+        val updatedTracks = keptIds.map { old -> oldTracks.first { it.id == old }.copy(id = idRemap.getValue(old)) }
+        val updatedFolders = _state.value.folders.map { f ->
+            f.copy(trackIds = f.trackIds.mapNotNull { idRemap[it] })
+        }
+        _state.update { it.copy(tracks = updatedTracks, folders = updatedFolders) }
+        pushAllTracks(updatedTracks)
+        pushSessionInit()
     }
 
     fun setTrackLabel(trackId: Int, label: String) {
@@ -297,11 +365,22 @@ class AppViewModel(
     fun record() {
         val isRecording = _state.value.transport.recording
         if (isRecording) {
-            /* Punch: apply pending pre-arm changes to local state, engine handles the restart. */
-            _state.update { s -> s.copy(tracks = s.tracks.map { t ->
-                val newArmed = t.preArmed ?: t.armed
-                t.copy(armed = newArmed, preArmed = null)
-            })}
+            /* Punch: finalise current take, auto-advance take number, start a
+             * new take.  Apply pending pre-arm changes to local state — the
+             * engine closes the file set, reopens with the new take embedded
+             * in the filename, and we already plumbed scene/take through
+             * CMD_SESSION_INIT. */
+            val nextTake = (_state.value.takeNum + 1).coerceAtMost(999)
+            _state.update { s -> s.copy(
+                takeNum = nextTake,
+                tracks  = s.tracks.map { t ->
+                    val newArmed = t.preArmed ?: t.armed
+                    t.copy(armed = newArmed, preArmed = null)
+                },
+            )}
+            /* Push the new take BEFORE CMD_RECORD so the engine's disk writer
+             * sees it when it opens the fresh file set. */
+            pushSessionInit()
         }
         runner.sendCommand(MsgType.CMD_RECORD)
     }
@@ -315,6 +394,118 @@ class AppViewModel(
     }
 
     fun resetClips() = runner.sendCommand(MsgType.CMD_METER_RESET)
+
+    /* ------------------------------------------------------------------
+     * Folder management
+     * ------------------------------------------------------------------ */
+
+    fun addFolder(name: String = "Folder ${_state.value.folders.size + 1}") {
+        val newId = (_state.value.folders.maxOfOrNull { it.id } ?: -1) + 1
+        _state.update { it.copy(folders = it.folders + Folder(
+            id = newId, name = name, trackIds = emptyList(),
+            /* Seed the new folder with the first existing folder's targets. */
+            targets = it.folders.firstOrNull()?.targets ?: currentTargets,
+        )) }
+        pushSessionInit()
+    }
+
+    fun removeFolder(folderId: Int) {
+        val folders = _state.value.folders
+        if (folders.size <= 1) return               /* keep at least one */
+        val victim = folders.firstOrNull { it.id == folderId } ?: return
+        val destination = folders.first { it.id != folderId }
+        val updated = folders.mapNotNull { f ->
+            when (f.id) {
+                folderId          -> null
+                destination.id    -> f.copy(trackIds = f.trackIds + victim.trackIds)
+                else              -> f
+            }
+        }
+        _state.update { it.copy(folders = updated) }
+        pushSessionInit()
+    }
+
+    fun renameFolder(folderId: Int, name: String) {
+        _state.update { s -> s.copy(folders = s.folders.map { f ->
+            if (f.id == folderId) f.copy(name = name) else f
+        })}
+        pushSessionInit()
+    }
+
+    fun setFolderCollapsed(folderId: Int, collapsed: Boolean) {
+        _state.update { s -> s.copy(folders = s.folders.map { f ->
+            if (f.id == folderId) f.copy(collapsed = collapsed) else f
+        })}
+        /* Collapse state is UI-only — don't push session. */
+    }
+
+    fun setFolderTargets(folderId: Int, targets: List<String>) {
+        _state.update { s -> s.copy(folders = s.folders.map { f ->
+            if (f.id == folderId) f.copy(targets = targets) else f
+        })}
+        pushSessionInit()
+    }
+
+    /** Move [trackId] up (-1) or down (+1) within its current folder.
+     *  No-op if the track is already at the boundary. */
+    fun reorderTrackInFolder(trackId: Int, dir: Int) {
+        var changed = false
+        _state.update { s ->
+            val updated = s.folders.map { f ->
+                val idx = f.trackIds.indexOf(trackId)
+                if (idx < 0) return@map f
+                val newIdx = idx + dir
+                if (newIdx < 0 || newIdx >= f.trackIds.size) return@map f
+                changed = true
+                val ids = f.trackIds.toMutableList()
+                ids.removeAt(idx)
+                ids.add(newIdx, trackId)
+                f.copy(trackIds = ids)
+            }
+            s.copy(folders = updated)
+        }
+        if (changed) pushSessionInit()
+    }
+
+    /** Move [trackId] into [destFolderId], appending at the end. */
+    fun moveTrackToFolder(trackId: Int, destFolderId: Int) {
+        _state.update { s ->
+            val cleaned = s.folders.map { f -> f.copy(trackIds = f.trackIds - trackId) }
+            val updated = cleaned.map { f ->
+                if (f.id == destFolderId) f.copy(trackIds = f.trackIds + trackId) else f
+            }
+            s.copy(folders = updated)
+        }
+        pushSessionInit()
+    }
+
+    /** Arm or disarm every track in the given folder. */
+    fun armFolder(folderId: Int, armed: Boolean) {
+        val ids = _state.value.folders.firstOrNull { it.id == folderId }?.trackIds ?: return
+        if (ids.isEmpty()) return
+        val cmd = if (armed) MsgType.CMD_ARM else MsgType.CMD_DISARM
+        runner.sendCommand(cmd, """{"tracks":[${ids.joinToString(",")}]}""")
+        val isRecording = _state.value.transport.recording
+        _state.update { s -> s.copy(tracks = s.tracks.map { t ->
+            if (t.id !in ids) t else {
+                val newMonitor = if (armed) true else t.monitor
+                if (isRecording)
+                    t.copy(preArmed = armed, monitor = newMonitor)
+                else
+                    t.copy(armed = armed, preArmed = null, monitor = newMonitor)
+            }
+        })}
+    }
+
+    /** Enable or disable monitor on every track in the folder. */
+    fun monitorFolder(folderId: Int, enabled: Boolean) {
+        val ids = _state.value.folders.firstOrNull { it.id == folderId }?.trackIds ?: return
+        val updated = _state.value.tracks.map { t ->
+            if (t.id in ids) t.copy(monitor = enabled) else t
+        }
+        _state.update { it.copy(tracks = updated) }
+        pushAllTracks(updated.filter { it.id in ids })
+    }
 
     /* ------------------------------------------------------------------
      * Bulk track actions (header row)

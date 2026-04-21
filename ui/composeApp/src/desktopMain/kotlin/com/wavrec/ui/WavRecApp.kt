@@ -17,6 +17,7 @@ private val AppBackground = Color(0xFF141414)
 fun WavRecApp(vm: AppViewModel) {
     val state    by vm.state.collectAsState()
     var showSettings by remember { mutableStateOf(true) }
+    var editTargetsForFolder: Int? by remember { mutableStateOf(null) }
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -65,7 +66,10 @@ fun WavRecApp(vm: AppViewModel) {
                         onSelectSampleRate   = vm::setSampleRate,
                         onSelectSampleFormat = vm::setSampleFormat,
                         onSelectTimecodeRate = vm::setTimecodeRate,
-                        onAddTrack           = { vm.addTrack() },
+                        onSelectPreRoll      = vm::setPreRoll,
+                        onSelectScene        = vm::setScene,
+                        onSelectTake         = vm::setTake,
+                        onAddFolder          = { vm.addFolder() },
                     )
                     HorizontalDivider(color = Color(0xFF2A2A2A))
                 }
@@ -79,20 +83,47 @@ fun WavRecApp(vm: AppViewModel) {
                 )
                 HorizontalDivider(color = Color(0xFF2A2A2A))
 
-                /* Track list */
+                /* Track list, grouped by folder */
                 TrackList(
-                    tracks        = state.tracks,
-                    waveforms     = vm.waveforms,
-                    onArm         = vm::armTrack,
-                    onMonitor     = vm::setMonitor,
-                    onLabelChange = vm::setTrackLabel,
-                    onInputChange = vm::setTrackInput,
-                    onRemove      = vm::removeTrack,
-                    modifier      = Modifier.weight(1f),
+                    tracks           = state.tracks,
+                    folders          = state.folders,
+                    diskStatus       = state.diskTargets,
+                    targetCommits    = state.targetCommits,
+                    waveforms        = vm.waveforms,
+                    onArm            = vm::armTrack,
+                    onMonitor        = vm::setMonitor,
+                    onLabelChange    = vm::setTrackLabel,
+                    onInputChange    = vm::setTrackInput,
+                    onRemove         = vm::removeTrack,
+                    onMoveTrack      = vm::moveTrackToFolder,
+                    onReorderTrack   = vm::reorderTrackInFolder,
+                    onFolderArm      = vm::armFolder,
+                    onFolderMon      = vm::monitorFolder,
+                    onFolderCollapse = vm::setFolderCollapsed,
+                    onFolderRename   = vm::renameFolder,
+                    onFolderAddTrack = { id -> vm.addTrack(folderId = id) },
+                    onFolderEditTargets = { editTargetsForFolder = it },
+                    onFolderRemove   = vm::removeFolder,
+                    modifier         = Modifier.weight(1f),
                 )
 
                 /* Status bar */
                 StatusBar(state = state, onResetClips = vm::resetClips)
+            }
+
+            /* Folder targets editor — shown when user clicks a folder's target label */
+            editTargetsForFolder?.let { fid ->
+                val folder = state.folders.firstOrNull { it.id == fid }
+                if (folder != null) {
+                    FolderTargetsDialog(
+                        folder       = folder,
+                        diskStatus   = state.diskTargets,
+                        onSetTargets = { vm.setFolderTargets(fid, it) },
+                        onDismiss    = { editTargetsForFolder = null },
+                    )
+                } else {
+                    editTargetsForFolder = null
+                }
             }
         }
     }

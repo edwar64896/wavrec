@@ -20,6 +20,7 @@ typedef struct Track {
     bool       monitor;      /* route input to output during record */
     TrackState state;
     int8_t     pre_armed;    /* -1 = none; 0 = pending disarm; 1 = pending arm */
+    int8_t     folder_id;    /* -1 = unassigned; else index into session.folders */
 } Track;
 
 void  track_init(Track *t, uint8_t id);

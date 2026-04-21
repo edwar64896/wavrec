@@ -10,6 +10,7 @@ void track_init(Track *t, uint8_t id)
     t->gain_db   = 0.0f;
     t->state     = TRACK_STATE_IDLE;
     t->pre_armed = -1;
+    t->folder_id = -1;
     snprintf(t->label, TRACK_LABEL_MAX, "Track %u", id + 1);
 }
 

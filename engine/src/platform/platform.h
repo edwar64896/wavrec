@@ -6,6 +6,7 @@
  */
 
 #include <stddef.h>
+#include <stdio.h>    /* FILE */
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -108,3 +109,8 @@ int64_t  platform_free_bytes(const char *path);
 /* Create directory and all intermediate components (mkdir -p equivalent).
  * Returns true on success or if the directory already exists. */
 bool     platform_mkdir_p(const char *path);
+
+/* Force stdio+OS buffers for fp to durable storage (fsync / _commit).
+ * Caller should fflush(fp) first — this only flushes the OS-level buffer.
+ * Returns true on success. */
+bool     platform_fsync(FILE *fp);

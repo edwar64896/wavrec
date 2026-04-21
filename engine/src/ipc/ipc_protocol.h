@@ -60,6 +60,7 @@ typedef enum {
     EVT_DISK_STATUS          = 0x87,
     EVT_CUE_UPDATE           = 0x88,
     EVT_TRANSCRIPTION        = 0x89,
+    EVT_TARGET_COMMIT        = 0x8A,  /* periodic disk flush / RIFF header update */
     EVT_TC_STATUS            = 0x8A,  /* deferred */
     EVT_ERROR                = 0xE0,
     EVT_LOG                  = 0xE1,

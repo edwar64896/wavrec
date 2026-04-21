@@ -15,7 +15,9 @@ struct WavRecEngine;
  * ONE producer thread calls audio_ring_write; ONE consumer calls audio_ring_read.
  * ---------------------------------------------------------------------- */
 
-#define AUDIO_RING_FRAMES 8192   /* power of 2 — ~170ms at 48kHz */
+#define AUDIO_RING_FRAMES 32768  /* power of 2 — ~683ms@48k / ~171ms@192k.
+                                  * Sized to absorb the stall when pre-roll
+                                  * drains into disk_rings on record start. */
 
 typedef struct {
     _Atomic uint32_t wp;

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <io.h>      /* _get_osfhandle, _fileno */
 #include <time.h>
 
 /* -------------------------------------------------------------------------
@@ -386,6 +387,14 @@ bool platform_mkdir_p(const char *path)
         if (err != ERROR_ALREADY_EXISTS) return false;
     }
     return true;
+}
+
+bool platform_fsync(FILE *fp)
+{
+    if (!fp) return false;
+    HANDLE h = (HANDLE)_get_osfhandle(_fileno(fp));
+    if (h == INVALID_HANDLE_VALUE) return false;
+    return FlushFileBuffers(h) != 0;
 }
 
 #endif /* _WIN32 */

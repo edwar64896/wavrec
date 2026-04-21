@@ -59,6 +59,21 @@ void tc_latch_free_run(WavRecTimecodeSource *src,
     src->type               = TC_SOURCE_FREE_RUN;
 }
 
+void tc_advance_origin_to(WavRecTimecodeSource *src,
+                          uint64_t new_engine_frame,
+                          uint32_t sample_rate)
+{
+    if (!src->locked || new_engine_frame == src->frame_at_origin) return;
+    if (new_engine_frame < src->frame_at_origin) return; /* only forward */
+
+    const TcRateInfo *ri = tc_rate_info(src->rate);
+    uint64_t delta_samples = new_engine_frame - src->frame_at_origin;
+    uint64_t delta_tc      = (delta_samples * ri->nominal) / sample_rate;
+
+    src->tc_frames_at_origin += delta_tc;
+    src->frame_at_origin      = new_engine_frame;
+}
+
 /* -------------------------------------------------------------------------
  * Current timecode
  * ---------------------------------------------------------------------- */

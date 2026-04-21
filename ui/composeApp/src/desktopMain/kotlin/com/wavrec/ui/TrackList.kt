@@ -23,6 +23,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import com.wavrec.engine.WaveformBuffers
+import com.wavrec.model.Folder
 import com.wavrec.model.TrackAlert
 import com.wavrec.model.TrackState
 
@@ -45,33 +46,79 @@ private val WFM_BG       = Color(0xFF0F0F0F)
 
 @Composable
 fun TrackList(
-    tracks        : List<TrackState>,
-    waveforms     : WaveformBuffers,
-    onArm         : (Int, Boolean) -> Unit,
-    onMonitor     : (Int, Boolean) -> Unit,
-    onLabelChange : (Int, String) -> Unit,
-    onInputChange : (Int, Int) -> Unit,
-    onRemove      : (Int) -> Unit,
-    modifier      : Modifier = Modifier,
+    tracks          : List<TrackState>,
+    folders         : List<Folder>,
+    diskStatus      : List<com.wavrec.model.DiskTarget>,
+    targetCommits   : Map<Pair<Int, Int>, Long>,
+    waveforms       : WaveformBuffers,
+    onArm           : (Int, Boolean) -> Unit,
+    onMonitor       : (Int, Boolean) -> Unit,
+    onLabelChange   : (Int, String) -> Unit,
+    onInputChange   : (Int, Int) -> Unit,
+    onRemove        : (Int) -> Unit,
+    onMoveTrack     : (Int, Int) -> Unit,
+    onReorderTrack  : (Int, Int) -> Unit,
+    onFolderArm     : (Int, Boolean) -> Unit,
+    onFolderMon     : (Int, Boolean) -> Unit,
+    onFolderCollapse: (Int, Boolean) -> Unit,
+    onFolderRename  : (Int, String) -> Unit,
+    onFolderAddTrack: (Int) -> Unit,
+    onFolderEditTargets: (Int) -> Unit,
+    onFolderRemove  : (Int) -> Unit,
+    modifier        : Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
+    val tracksById = tracks.associateBy { it.id }
+
     Box(modifier.fillMaxSize()) {
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-            itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
-                TrackRow(
-                    track         = track,
-                    even          = index % 2 == 0,
-                    waveforms     = waveforms,
-                    onArm         = { onArm(track.id, !track.armed) },
-                    onMonitor     = { onMonitor(track.id, !track.monitor) },
-                    onLabelChange = { onLabelChange(track.id, it) },
-                    onInputChange = { onInputChange(track.id, it) },
-                    onRemove      = { onRemove(track.id) },
-                )
+
+            folders.forEach { folder ->
+                val folderTracks = folder.trackIds.mapNotNull { tracksById[it] }
+
+                item(key = "folder-${folder.id}") {
+                    FolderHeader(
+                        folder         = folder,
+                        tracks         = folderTracks,
+                        diskStatus     = diskStatus,
+                        targetCommits  = targetCommits,
+                        onArm          = { onFolderArm(folder.id, it) },
+                        onMon          = { onFolderMon(folder.id, it) },
+                        onCollapse     = { onFolderCollapse(folder.id, !folder.collapsed) },
+                        onRename       = { onFolderRename(folder.id, it) },
+                        onAddTrack     = { onFolderAddTrack(folder.id) },
+                        onEditTargets  = { onFolderEditTargets(folder.id) },
+                        onRemove       = { onFolderRemove(folder.id) },
+                    )
+                    HorizontalDivider(color = Color(0xFF242424), thickness = 0.5.dp)
+                }
+
+                if (!folder.collapsed) {
+                    itemsIndexed(folderTracks, key = { _, t -> "track-${folder.id}-${t.id}" }) { i, track ->
+                        TrackRow(
+                            track           = track,
+                            even            = i % 2 == 0,
+                            folders         = folders,
+                            currentFolderId = folder.id,
+                            canMoveUp       = i > 0,
+                            canMoveDown     = i < folderTracks.size - 1,
+                            waveforms       = waveforms,
+                            onArm           = { onArm(track.id, !track.armed) },
+                            onMonitor       = { onMonitor(track.id, !track.monitor) },
+                            onLabelChange   = { onLabelChange(track.id, it) },
+                            onInputChange   = { onInputChange(track.id, it) },
+                            onRemove        = { onRemove(track.id) },
+                            onMoveTrack     = { onMoveTrack(track.id, it) },
+                            onMoveUp        = { onReorderTrack(track.id, -1) },
+                            onMoveDown      = { onReorderTrack(track.id, +1) },
+                        )
+                    }
+                }
             }
+
             item { Spacer(Modifier.height(8.dp)) }
 
-            if (tracks.isEmpty()) {
+            if (folders.isEmpty() && tracks.isEmpty()) {
                 item {
                     Box(Modifier.fillMaxWidth().height(80.dp),
                         contentAlignment = Alignment.Center) {
@@ -86,14 +133,21 @@ fun TrackList(
 
 @Composable
 private fun TrackRow(
-    track         : TrackState,
-    even          : Boolean,
-    waveforms     : WaveformBuffers,
-    onArm         : () -> Unit,
-    onMonitor     : () -> Unit,
-    onLabelChange : (String) -> Unit,
-    onInputChange : (Int) -> Unit,
-    onRemove      : () -> Unit,
+    track           : TrackState,
+    even            : Boolean,
+    folders         : List<Folder>,
+    currentFolderId : Int,
+    canMoveUp       : Boolean,
+    canMoveDown     : Boolean,
+    waveforms       : WaveformBuffers,
+    onArm           : () -> Unit,
+    onMonitor       : () -> Unit,
+    onLabelChange   : (String) -> Unit,
+    onInputChange   : (Int) -> Unit,
+    onRemove        : () -> Unit,
+    onMoveTrack     : (Int) -> Unit,
+    onMoveUp        : () -> Unit,
+    onMoveDown      : () -> Unit,
 ) {
     val bg = if (track.armed) BG_ARMED else if (even) BG_EVEN else BG_ODD
 
@@ -228,6 +282,35 @@ private fun TrackRow(
             modifier = Modifier.width(8.dp).fillMaxHeight().padding(vertical = 2.dp),
         )
 
+        /* Reorder within folder — compact ▲▼ pair. */
+        ReorderArrow(Icons.Default.KeyboardArrowUp,   canMoveUp,   onMoveUp)
+        ReorderArrow(Icons.Default.KeyboardArrowDown, canMoveDown, onMoveDown)
+
+        /* Move to another folder (visible only if >1 folders exist). */
+        if (folders.size > 1) {
+            var folderMenuOpen by remember { mutableStateOf(false) }
+            Box {
+                Box(
+                    modifier = Modifier.size(14.dp).clickable { folderMenuOpen = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.DriveFileMove, "Move to folder",
+                         tint = DEL_COLOR, modifier = Modifier.size(11.dp))
+                }
+                DropdownMenu(
+                    expanded         = folderMenuOpen,
+                    onDismissRequest = { folderMenuOpen = false },
+                ) {
+                    folders.filter { it.id != currentFolderId }.forEach { f ->
+                        DropdownMenuItem(
+                            text    = { Text(f.name, fontSize = 12.sp) },
+                            onClick = { onMoveTrack(f.id); folderMenuOpen = false },
+                        )
+                    }
+                }
+            }
+        }
+
         /* Delete */
         Box(
             modifier = Modifier.size(14.dp).clickable(onClick = onRemove),
@@ -296,5 +379,24 @@ private fun SmallArrow(
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, null, tint = CH_TEXT, modifier = Modifier.size(12.dp))
+    }
+}
+
+/** Reorder-within-folder arrow: greyed out when at boundary. */
+@Composable
+private fun ReorderArrow(
+    icon    : androidx.compose.ui.graphics.vector.ImageVector,
+    enabled : Boolean,
+    onClick : () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(14.dp)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, null,
+             tint = if (enabled) CH_TEXT else DEL_COLOR,
+             modifier = Modifier.size(12.dp))
     }
 }

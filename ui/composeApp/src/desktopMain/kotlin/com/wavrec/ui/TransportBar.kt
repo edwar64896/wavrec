@@ -29,7 +29,12 @@ fun TransportBar(
 ) {
     val transport  = state.transport
     val connected  = state.connection == EngineConnectionState.CONNECTED
-    val anyArmed   = state.tracks.any { it.armed }
+    /* Record is enabled whenever at least one track is armed OR has a pending
+     * pre-arm.  During recording, pressing it punches: finalises the current
+     * take, advances the take number, and rolls to a new file set at the
+     * next wall-second.  We intentionally allow the click while recording
+     * so the user can trigger a punch. */
+    val anyArmed   = state.tracks.any { it.armed || it.preArmed == true }
 
     Surface(
         modifier  = modifier.fillMaxWidth().height(56.dp),
@@ -56,9 +61,10 @@ fun TransportBar(
             /* --- Transport buttons --- */
             IconButton(
                 onClick  = onRecord,
-                enabled  = connected && !transport.recording && anyArmed,
+                enabled  = connected && anyArmed,
             ) {
                 Icon(Icons.Default.FiberManualRecord, "Record",
+                     /* Solid red while actively recording; dim when idle-armed. */
                      tint = if (transport.recording) RECORD_RED else RECORD_RED.copy(alpha = 0.5f),
                      modifier = Modifier.size(32.dp))
             }

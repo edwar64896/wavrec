@@ -62,6 +62,14 @@ void tc_latch_free_run(WavRecTimecodeSource *src,
                        uint64_t engine_frame,
                        uint32_t sample_rate);
 
+/* Advance the origin to `new_engine_frame` while preserving TC continuity.
+ * Used when a new file is started mid-recording (punch) so that the new
+ * file's BEXT TimeReference picks up exactly where the previous file ended.
+ * No wall-clock reads — purely deterministic re-basing. */
+void tc_advance_origin_to(WavRecTimecodeSource *src,
+                          uint64_t new_engine_frame,
+                          uint32_t sample_rate);
+
 /* Compute current SMPTE frame count (frames since midnight) given the
  * current engine frame counter.  Works for all source types. */
 uint64_t tc_frames_now(const WavRecTimecodeSource *src,

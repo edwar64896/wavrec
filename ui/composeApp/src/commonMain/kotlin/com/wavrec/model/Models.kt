@@ -39,6 +39,20 @@ data class WfmBlock(
 
 enum class TrackAlert { NONE, LOW_SIGNAL, NEAR_CLIP, CLIPPING }
 
+/* -------------------------------------------------------------------------
+ * Folder — groups tracks into a single poly WAV output, with its own set
+ * of target disks.  Track membership is ordered: position in trackIds
+ * defines channel order in the written file.
+ * ---------------------------------------------------------------------- */
+
+data class Folder(
+    val id       : Int,
+    val name     : String        = "Main",
+    val trackIds : List<Int>     = emptyList(),
+    val targets  : List<String>  = emptyList(),
+    val collapsed: Boolean       = false,
+)
+
 data class TrackState(
     val id       : Int,
     val label    : String   = "Track ${id + 1}",
@@ -99,9 +113,19 @@ data class EngineState(
     val sampleFormat    : String                = "pcm24",
     val timecodeRate    : String                = "25",    /* wire format: 23.976/24/25/29.97/30 */
     val timecodeDrop    : Boolean               = false,
+    val preRollSeconds  : Float                 = 0f,     /* 0 = disabled */
+    /* Scene/Take: integers, displayed as %02d / %03d, used in filenames.
+     * Scene change auto-resets Take to 1.  Punch (record while recording)
+     * auto-advances Take and starts a fresh file set. */
+    val sceneNum        : Int                   = 1,
+    val takeNum         : Int                   = 1,
     val tracks          : List<TrackState>      = emptyList(),
+    val folders         : List<Folder>          = emptyList(),
     val transport       : TransportState        = TransportState(),
     val diskTargets     : List<DiskTarget>      = emptyList(),
+    /* Last commit timestamp (ms since epoch) per (folderId, targetIdx).
+     * Updated by EVT_TARGET_COMMIT; drives the per-target disk-chip flash. */
+    val targetCommits   : Map<Pair<Int, Int>, Long> = emptyMap(),
     val remainingSecs   : Long                  = 0L,
     val lastError       : String?               = null,
     /* Device config */

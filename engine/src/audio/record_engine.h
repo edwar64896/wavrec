@@ -84,6 +84,24 @@ static inline uint32_t txcr_ring_count(const TxcrRing *rb)
 }
 
 /* -------------------------------------------------------------------------
+ * Pre-roll ring — per-track rolling buffer of the most-recent N samples,
+ * filled while the track is armed but not recording.  On CMD_RECORD those
+ * samples are prepended to the disk ring so the take starts N seconds
+ * earlier than the user's button press.
+ *
+ * Single-threaded: only record_engine_thread reads or writes it.  `count`
+ * is atomic so the IPC command thread can query it (to compute the global
+ * min pre-roll across armed tracks for timecode alignment).
+ * ---------------------------------------------------------------------- */
+
+typedef struct {
+    float           *buf;       /* malloc'd; NULL when disabled          */
+    uint32_t         capacity;  /* total samples; 0 when disabled        */
+    uint32_t         head;      /* next write position                   */
+    _Atomic uint32_t count;     /* samples currently held (0..capacity)  */
+} PreRollRing;
+
+/* -------------------------------------------------------------------------
  * RecordEngine context
  * ---------------------------------------------------------------------- */
 
@@ -99,6 +117,18 @@ typedef struct RecordEngine {
 
     /* Per-track transcription enable flag (set via CMD_TRANSCRIPTION_CONFIG) */
     bool        txcr_enabled[WAVREC_MAX_CHANNELS];
+
+    /* Per-track pre-roll ring — filled while armed+idle, drained on take start. */
+    PreRollRing pre_roll_rings[WAVREC_MAX_CHANNELS];
+
+    /* Frames to drain from pre_roll_rings on next IDLE→RECORDING transition.
+     * Set by engine_dispatch(CMD_RECORD) after it computes the global min
+     * across armed tracks and latches TC.  Read once by record_engine_thread
+     * on the transition edge, then cleared to 0. */
+    _Atomic uint32_t pre_roll_drain_frames;
+
+    /* Transition edge detector for is_recording; set by record_engine_thread. */
+    bool        was_recording;
 
     /* Overflow counters — incremented when a downstream ring is full.
      * Non-fatal: the sample is dropped from that feed only. */
@@ -131,3 +161,16 @@ TxcrRing  *record_engine_txcr_ring (struct WavRecEngine *eng, int track_id);
 
 /* Enable/disable transcription feed for a track. */
 void record_engine_set_txcr(struct WavRecEngine *eng, int track_id, bool enabled);
+
+/* Reallocate all pre-roll ring buffers for the current session's
+ * (sample_rate × pre_roll_seconds).  Must be called with the record-engine
+ * thread STOPPED (typically during CMD_SESSION_INIT). */
+void record_engine_configure_preroll(struct WavRecEngine *eng);
+
+/* Return the smallest pre_roll_ring count across all currently armed tracks.
+ * Used by engine_dispatch(CMD_RECORD) to align timecode across the take. */
+uint32_t record_engine_preroll_min_count(struct WavRecEngine *eng);
+
+/* Signal the record engine to drain this many frames from each armed track's
+ * pre_roll ring on the next IDLE→RECORDING transition. */
+void record_engine_set_preroll_drain(struct WavRecEngine *eng, uint32_t frames);

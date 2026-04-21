@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 
+
 /* -------------------------------------------------------------------------
  * Engine context
  * ---------------------------------------------------------------------- */
@@ -104,6 +105,7 @@ WavRecEngine *engine_create(void)
     eng->session.buffer_frames = 512;
     eng->session.tc_rate       = TC_RATE_25;
     eng->session.n_targets     = 0;
+    eng->session.n_folders     = 0;
 
     tc_init(&eng->tc, TC_RATE_25);
 
@@ -309,17 +311,128 @@ static void parse_session_init(WavRecEngine *eng, const char *payload)
                 eng->session.tc_rate = TC_RATE_30_DF;
         }
     }
-    tc_init(&eng->tc, eng->session.tc_rate);
+    /* Re-init TC only when actually needed: rate changed, or we're not
+     * currently recording.  Calling tc_init() mid-recording would unlatch
+     * the free-run origin and break sample-contiguous punch, which sends a
+     * CMD_SESSION_INIT (to advance take) right before CMD_RECORD. */
+    {
+        EngState cur = (EngState)atomic_load_explicit(&eng->state,
+                                                       memory_order_relaxed);
+        bool recording = (cur == ENG_STATE_RECORDING ||
+                          cur == ENG_STATE_RECORD_PLAY);
+        if (!recording || eng->tc.rate != eng->session.tc_rate)
+            tc_init(&eng->tc, eng->session.tc_rate);
+    }
 
-    j = cJSON_GetObjectItem(root, "record_targets");
-    if (cJSON_IsArray(j)) {
-        eng->session.n_targets = 0;
-        cJSON *el;
-        cJSON_ArrayForEach(el, j) {
-            if (!cJSON_IsString(el)) continue;
+    /* --- Pre-roll (seconds) — 0.0 disables pre-record buffering ------ */
+    j = cJSON_GetObjectItem(root, "pre_roll_seconds");
+    if (cJSON_IsNumber(j)) {
+        float v = (float)j->valuedouble;
+        if (v < 0.0f)  v = 0.0f;
+        if (v > 30.0f) v = 30.0f;
+        eng->session.pre_roll_seconds = v;
+    }
+
+    /* --- Folder layout -------------------------------------------------
+     * The wire format is:
+     *   "folders": [
+     *     { "id": 0, "name": "Drums", "track_ids":[0,1,2],
+     *       "targets":["C:\\Rec\\A","D:\\Rec"] }, ...
+     *   ]
+     * If folders is absent (legacy UI), we fall back to the flat
+     * `record_targets` array and synthesize one default folder that
+     * contains every track. */
+    memset(eng->session.folders, 0, sizeof(eng->session.folders));
+    eng->session.n_folders = 0;
+
+    cJSON *folders = cJSON_GetObjectItem(root, "folders");
+    if (cJSON_IsArray(folders)) {
+        cJSON *fel;
+        cJSON_ArrayForEach(fel, folders) {
+            if (eng->session.n_folders >= WAVREC_MAX_FOLDERS) break;
+            if (!cJSON_IsObject(fel)) continue;
+            EngFolder *f = &eng->session.folders[eng->session.n_folders];
+            f->id = eng->session.n_folders;
+            cJSON *x;
+            x = cJSON_GetObjectItem(fel, "name");
+            if (cJSON_IsString(x))
+                strncpy(f->name, x->valuestring, WAVREC_MAX_FOLDER_NAME - 1);
+            x = cJSON_GetObjectItem(fel, "track_ids");
+            if (cJSON_IsArray(x)) {
+                cJSON *tel;
+                cJSON_ArrayForEach(tel, x) {
+                    if (f->n_tracks >= WAVREC_MAX_CHANNELS) break;
+                    if (cJSON_IsNumber(tel))
+                        f->track_ids[f->n_tracks++] = (int)tel->valuedouble;
+                }
+            }
+            x = cJSON_GetObjectItem(fel, "targets");
+            if (cJSON_IsArray(x)) {
+                cJSON *tel;
+                cJSON_ArrayForEach(tel, x) {
+                    if (f->n_targets >= WAVREC_MAX_TARGETS) break;
+                    if (cJSON_IsString(tel)) {
+                        strncpy(f->targets[f->n_targets],
+                                tel->valuestring,
+                                WAVREC_MAX_TARGET_PATH - 1);
+                        f->n_targets++;
+                    }
+                }
+            }
+            eng->session.n_folders++;
+        }
+    } else {
+        /* Legacy: look for record_targets and synthesize one folder. */
+        cJSON *legacy = cJSON_GetObjectItem(root, "record_targets");
+        if (cJSON_IsArray(legacy)) {
+            EngFolder *f = &eng->session.folders[0];
+            f->id = 0;
+            strncpy(f->name, "Main", WAVREC_MAX_FOLDER_NAME - 1);
+            cJSON *el;
+            cJSON_ArrayForEach(el, legacy) {
+                if (!cJSON_IsString(el)) continue;
+                if (f->n_targets >= WAVREC_MAX_TARGETS) break;
+                strncpy(f->targets[f->n_targets],
+                        el->valuestring, WAVREC_MAX_TARGET_PATH - 1);
+                f->n_targets++;
+            }
+            /* All tracks belong to this folder until track-config says otherwise. */
+            for (int i = 0; i < engine_n_tracks(eng); i++)
+                f->track_ids[f->n_tracks++] = i;
+            eng->session.n_folders = 1;
+        }
+    }
+
+    /* Apply folder_id to each track based on its folder membership. */
+    for (int i = 0; i < engine_n_tracks(eng); i++)
+        eng->tracks[i].folder_id = -1;
+    for (int fi = 0; fi < eng->session.n_folders; fi++) {
+        EngFolder *f = &eng->session.folders[fi];
+        for (int ti = 0; ti < f->n_tracks; ti++) {
+            int tid = f->track_ids[ti];
+            if (tid >= 0 && tid < engine_n_tracks(eng))
+                eng->tracks[tid].folder_id = (int8_t)fi;
+        }
+    }
+
+    /* Populate the legacy flat target list as the UNION of every folder's
+     * targets, in order.  Duplicates are preserved so the current
+     * disk_writer keeps producing a file per distinct target. */
+    eng->session.n_targets = 0;
+    for (int fi = 0; fi < eng->session.n_folders; fi++) {
+        EngFolder *f = &eng->session.folders[fi];
+        for (int ti = 0; ti < f->n_targets; ti++) {
             if (eng->session.n_targets >= WAVREC_MAX_TARGETS) break;
+            /* Skip exact-duplicate paths. */
+            bool dup = false;
+            for (int k = 0; k < eng->session.n_targets; k++) {
+                if (strcmp(eng->session.record_targets[k], f->targets[ti]) == 0) {
+                    dup = true; break;
+                }
+            }
+            if (dup) continue;
             strncpy(eng->session.record_targets[eng->session.n_targets],
-                    el->valuestring, WAVREC_MAX_TARGET_PATH - 1);
+                    f->targets[ti], WAVREC_MAX_TARGET_PATH - 1);
             eng->session.n_targets++;
         }
     }
@@ -385,6 +498,28 @@ static uint64_t parse_position(const char *payload, uint16_t len)
     return pos;
 }
 
+/* -------------------------------------------------------------------------
+ * Wall-clock second alignment
+ *
+ * Engine frames are delivered in buffer-sized batches by the audio
+ * callback, so the frame counter alone can't tell you when wall clock
+ * has just crossed a second boundary — at read time the counter may
+ * reflect a point up to one buffer period before the true wall
+ * position.  That's enough, at 25 fps, to put `tc_frames_at_origin`
+ * one frame on the wrong side of the boundary (SS:24 instead of
+ * SS+1:00).  So we poll wall clock directly instead. */
+
+static void wait_for_next_wall_second(uint32_t sample_rate)
+{
+    uint64_t s0         = platform_samples_since_midnight(sample_rate);
+    uint64_t target_sec = (s0 / sample_rate) + 1;
+    for (;;) {
+        uint64_t s = platform_samples_since_midnight(sample_rate);
+        if ((s / sample_rate) >= target_sec) return;
+        platform_sleep_ms(1);
+    }
+}
+
 /* Apply any pending pre_armed values to armed, then clear them. */
 static void apply_pre_armed(WavRecEngine *eng)
 {
@@ -394,6 +529,15 @@ static void apply_pre_armed(WavRecEngine *eng)
             eng->tracks[i].pre_armed = -1;
         }
     }
+}
+
+/* Exposed for disk_writer's rotation path — runs on the disk_writer thread
+ * during a sample-contiguous punch so that newly-armed tracks start cleanly
+ * at the rotation boundary (and disarmed tracks stop cleanly at the same
+ * boundary). */
+void engine_apply_pre_armed(WavRecEngine *eng)
+{
+    apply_pre_armed(eng);
 }
 
 /* Arm/disarm the tracks listed in {"tracks":[id,id,...]}; if the array
@@ -489,6 +633,11 @@ void engine_dispatch(WavRecEngine *eng, WavRecMsgType type,
         /* (Re)open device so monitoring is live immediately; safe only when idle. */
         if (cur == ENG_STATE_IDLE || cur == ENG_STATE_ARMED) {
             audio_io_close_device(eng);
+            /* Stop the record engine so pre-roll buffers can be (re)sized
+             * safely — the reconfigure call touches malloc'd buffers that
+             * the record thread would otherwise be reading from. */
+            record_engine_stop(eng);
+            record_engine_configure_preroll(eng);
             audio_io_open_device(eng);
             /* Ensure signal distribution and metering run continuously. */
             record_engine_start(eng);
@@ -529,25 +678,64 @@ void engine_dispatch(WavRecEngine *eng, WavRecMsgType type,
 
     case CMD_RECORD:
         if (cur == ENG_STATE_RECORDING || cur == ENG_STATE_RECORD_PLAY) {
-            /* Punch: stop current take, apply pre_armed, start next take. */
-            set_state(eng, ENG_STATE_STOPPING);
-            record_engine_stop(eng);
-            disk_writer_close(eng);
-            apply_pre_armed(eng);
-            tc_latch_free_run(&eng->tc,
-                              engine_frame_counter(eng),
-                              eng->session.sample_rate);
-            disk_writer_open(eng);
-            record_engine_start(eng);
-            metering_start(eng);
-            waveform_start(eng);
-            set_state(eng, (cur == ENG_STATE_RECORD_PLAY)
-                           ? ENG_STATE_RECORD_PLAY : ENG_STATE_RECORDING);
+            /* Sample-contiguous punch aligned to a wall-second.
+             *
+             * disk_writer->effective_origin was latched on a wall-second
+             * at record start and every rotation advances it by an exact
+             * multiple of sr, so the next clean boundary is simply
+             * effective_origin + ceil(elapsed / sr) * sr.  Staying in
+             * engine-frame space avoids mixing engine and wall-clock
+             * coordinates, which is how the frame-24 drift crept in. */
+            uint32_t sr       = eng->session.sample_rate;
+            DiskWriter *dw    = engine_disk_writer(eng);
+            uint64_t now      = engine_frame_counter(eng);
+            uint64_t eff      = dw ? dw->effective_origin : now;
+            uint64_t elapsed  = (now > eff) ? (now - eff) : 0;
+            uint64_t target   = eff + (((elapsed / sr) + 1) * (uint64_t)sr);
+
+            disk_writer_rotate_at(eng, target);
+            /* State stays RECORDING — no transition event needed. */
         } else if (cur == ENG_STATE_ARMED || cur == ENG_STATE_IDLE) {
             audio_io_open_device(eng);  /* no-op if already open */
-            tc_latch_free_run(&eng->tc,
-                              engine_frame_counter(eng),
-                              eng->session.sample_rate);
+
+            /* Wait until wall clock has crossed into the next second.
+             * We poll wall clock directly so the latch is *guaranteed*
+             * to happen after the boundary, not before it — engine-
+             * frame-counter batching otherwise risks a pre-boundary
+             * latch at the last TC frame of the previous second.
+             * Blocks the IPC thread up to ~1 s. */
+            uint32_t sr = eng->session.sample_rate;
+            wait_for_next_wall_second(sr);
+
+            /* Pre-roll: grab the smallest ring count across armed
+             * tracks so all channels align.  Truncate to a whole number
+             * of seconds so file sample 0 also lands on a wall-second
+             * (otherwise origin = now - preroll would land preroll%sr
+             * samples into the previous second). */
+            uint32_t preroll_raw = record_engine_preroll_min_count(eng);
+            uint32_t preroll     = (preroll_raw / sr) * sr;
+            record_engine_set_preroll_drain(eng, preroll);
+
+            uint64_t now_engine = engine_frame_counter(eng);
+            uint64_t origin     = (now_engine > preroll)
+                                  ? (now_engine - preroll) : 0;
+
+            tc_latch_free_run(&eng->tc, origin, sr);
+
+            /* tc_latch_free_run reads wall clock *now* and stores that
+             * as tc_frames_at_origin.  For preroll > 0, sample 0 was
+             * captured preroll samples earlier, so back-date the TC by
+             * the preroll duration.  Since preroll is a multiple of sr,
+             * preroll_tc is a multiple of nominal fps — the origin
+             * stays wall-second-aligned. */
+            if (preroll > 0) {
+                const TcRateInfo *ri = tc_rate_info(eng->tc.rate);
+                uint64_t preroll_tc = ((uint64_t)preroll * ri->nominal) / sr;
+                eng->tc.tc_frames_at_origin =
+                    (eng->tc.tc_frames_at_origin >= preroll_tc)
+                    ? (eng->tc.tc_frames_at_origin - preroll_tc) : 0;
+            }
+
             disk_writer_open(eng);
             record_engine_start(eng);   /* no-op if already running */
             metering_start(eng);        /* no-op if already running */

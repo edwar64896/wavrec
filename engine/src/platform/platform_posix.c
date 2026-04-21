@@ -365,4 +365,17 @@ bool platform_mkdir_p(const char *path)
     return true;
 }
 
+bool platform_fsync(FILE *fp)
+{
+    if (!fp) return false;
+    int fd = fileno(fp);
+    if (fd < 0) return false;
+#if defined(__APPLE__)
+    /* fsync on Darwin doesn't flush the drive cache; F_FULLFSYNC does. */
+    return fcntl(fd, F_FULLFSYNC) == 0;
+#else
+    return fsync(fd) == 0;
+#endif
+}
+
 #endif /* !_WIN32 */
