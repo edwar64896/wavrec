@@ -1,0 +1,46 @@
+# Build output
+/build/
+engine/build/
+ui/build/
+ui/**/build/
+ui/.gradle/
+.gradle/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# Compiled binaries and link artifacts
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.obj
+*.o
+*.a
+*.so
+*.dylib
+
+# Logs and runtime artefacts
+*.log
+*.stackdump
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+Thumbs.db
+
+# Kotlin / Compose
+kotlin-js-store/
+local.properties

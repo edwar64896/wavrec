@@ -1,0 +1,22 @@
+[versions]
+kotlin         = "2.3.20"
+compose-plugin = "1.10.3"
+coroutines     = "1.10.1"
+serialization  = "1.8.1"
+datetime       = "0.6.2"
+jna            = "5.14.0"
+
+[libraries]
+kotlin-stdlib       = { module = "org.jetbrains.kotlin:kotlin-stdlib",                         version.ref = "kotlin" }
+coroutines-core     = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core",               version.ref = "coroutines" }
+coroutines-swing    = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing",              version.ref = "coroutines" }
+serialization-json  = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json",            version.ref = "serialization" }
+kotlinx-datetime    = { module = "org.jetbrains.kotlinx:kotlinx-datetime",                      version.ref = "datetime" }
+jna                 = { module = "net.java.dev.jna:jna",                                        version.ref = "jna" }
+jna-platform        = { module = "net.java.dev.jna:jna-platform",                               version.ref = "jna" }
+
+[plugins]
+jetbrainsCompose   = { id = "org.jetbrains.compose",                                version.ref = "compose-plugin" }
+kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform",                  version.ref = "kotlin" }
+compose-compiler   = { id = "org.jetbrains.kotlin.plugin.compose",                  version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization",          version.ref = "kotlin" }
