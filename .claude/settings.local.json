@@ -49,7 +49,18 @@
       "Bash(git add *)",
       "Bash(cmd.exe /c \"taskkill /F /IM java.exe\")",
       "Bash(cmake --build . --config Release --target wavrec_engine)",
-      "Bash(cmake --build . --config Debug --target wavrec_engine)"
+      "Bash(cmake --build . --config Debug --target wavrec_engine)",
+      "Bash(./gradlew :composeApp:run)",
+      "Bash(cmake .. -G \"Visual Studio 16 2019\" -A x64)",
+      "Bash(xargs rm *)",
+      "Bash(powershell -Command \"Get-WindowsSDKVersion 2>/dev/null\")",
+      "Bash(reg query *)",
+      "Read(//c/Users/Mark/dev/ASIOSDK2.3/ASIOSDK/common/**)",
+      "Read(//d/Dev/**)",
+      "Bash(cmake .. -G \"Visual Studio 17 2022\" -A x64 -DCMAKE_SYSTEM_VERSION=10.0.26100.0)",
+      "Bash(./gradlew.bat --version)",
+      "Bash(cmake *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

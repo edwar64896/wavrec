@@ -12,6 +12,12 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#ifdef NDEBUG
+#  define DBGLOG(...) ((void)0)
+#else
+#  define DBGLOG(...) fprintf(stderr, __VA_ARGS__)
+#endif
+
 
 /* Forward decls — rotation helpers live further down but are called by
  * writer_thread higher up. */
